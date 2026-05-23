@@ -72,9 +72,9 @@ const regions = computeRegions(points, 'enough');
 ### Solidity
 
 ```solidity
-import { SaltCutsRenderer } from "./SaltCutsRenderer.sol";
+import { Renderer } from "./Renderer.sol";
 
-SaltCutsRenderer renderer = new SaltCutsRenderer();
+Renderer renderer = new Renderer();
 
 // xs, ys are uint16[] in [0, 10000] coordinate space
 string memory svg = renderer.renderSVG(xs, ys, "your prompt here");
