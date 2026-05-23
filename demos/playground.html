@@ -1,0 +1,875 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mixed Messages — Rendering Tests</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #1a1a20;
+    color: #cccccc;
+    font-family: 'IBM Plex Mono', monospace;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 8px 12px 24px;
+    min-height: 100vh;
+  }
+  input[type="text"] {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    padding: 3px 8px;
+    background: transparent;
+    color: #cccccc;
+    border: 1px solid #444;
+    width: 200px;
+    outline: none;
+  }
+  input[type="text"]:focus { border-color: #888; }
+  .opt-row { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-bottom: 2px; }
+  .opt-row .opt-label,
+  .mini-label { color: #666; font-size: 10px; letter-spacing: 0.5px; text-transform: uppercase; padding: 0 6px 0 4px; }
+  .opt-row label { color: #aaa; font-size: 11px; cursor: pointer; padding: 2px 7px; border: 1px solid #222; }
+  .opt-row label:hover { color: #ddd; border-color: #444; }
+  .opt-row input[type="radio"], .opt-row input[type="checkbox"] { display: none; }
+  .opt-row input:checked + span { color: #cccccc; }
+  .opt-row label:has(input:checked) { color: #cccccc; border-color: #666; background: #111118; }
+  h1 {
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+    color: #666;
+  }
+  .toggle-bar {
+    display: flex;
+    gap: 3px;
+    margin-bottom: 4px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .toggle-bar button {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    font-weight: 400;
+    padding: 3px 9px;
+    background: transparent;
+    color: #555;
+    border: 1px solid #222;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    white-space: nowrap;
+  }
+  .toggle-bar button:hover { color: #999; border-color: #444; }
+  .toggle-bar button.active { color: #cccccc; border-color: #666; background: #111118; }
+  .label {
+    font-size: 10px;
+    color: #444;
+    margin-bottom: 1px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+  /* Inline label that sits to the left of a control row (saves vertical space). */
+  .inline-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: center; margin-bottom: 4px; }
+  .inline-row .label { margin-bottom: 0; min-width: 70px; text-align: right; }
+  canvas { border: 1px solid #1a1a24; background: #ffffff; }
+  .render-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 16px;
+    margin-top: 6px;
+  }
+  .render-col { display: flex; flex-direction: column; align-items: center; }
+  .render-col .label { margin-bottom: 4px; }
+  .info {
+    margin-top: 6px;
+    font-size: 10px;
+    color: #444;
+  }
+</style>
+</head>
+<body>
+
+<div class="inline-row">
+  <span class="label">Prompt</span>
+  <input id="prompt-input" type="text" value="enough" />
+  <span class="label">N</span>
+  <input id="count-range" type="range" min="0" max="800" step="1" value="200" style="width: 180px;" />
+  <input id="count-input" type="number" min="0" max="2000" value="200" style="width: 70px;" />
+  <button id="reseed-btn" type="button">Reseed</button>
+  <button id="clear-btn" type="button">Clear manual</button>
+</div>
+
+<div class="inline-row">
+  <span class="label">Dist</span>
+  <div class="toggle-bar" id="dist-bar" style="margin-bottom:0;"></div>
+</div>
+
+<div class="render-row">
+  <div class="render-col">
+    <div class="label">Submissions</div>
+    <canvas id="scatter" width="440" height="440" style="width:220px;height:220px"></canvas>
+  </div>
+  <div class="render-col">
+    <div class="label">Rendered 1/1</div>
+    <canvas id="canvas" width="600" height="600"></canvas>
+  </div>
+</div>
+<div class="info" id="info"></div>
+
+<script src="recursivesubdivision.js"></script>
+<script>
+// --- Discrete coloring (test page only) ---
+// Each submission's color is one of four pure corner colors based on which
+// quadrant it falls in. Replaces the production renderer's bilinear
+// interpolation. No neutral mid-zone: every submission picks a side.
+
+const CORNERS = {
+  TL: [85, 255, 255], // performed + uniting (cyan)
+  TR: [85, 255, 85],  // honest    + uniting (green)
+  BL: [255, 85, 85],  // performed + dividing (red)
+  BR: [85, 85, 255],  // honest    + dividing (blue)
+};
+
+function discreteColor(x, y) {
+  if (x < 0.5 && y < 0.5) return CORNERS.TL;
+  if (x >= 0.5 && y < 0.5) return CORNERS.TR;
+  if (x < 0.5 && y >= 0.5) return CORNERS.BL;
+  return CORNERS.BR;
+}
+
+// Magnitude (max-axis): how extreme a submission is on the dominant axis.
+// Range [0, 1] where 0 = exact center, 1 = on the canvas edge.
+function sliceMagnitude(x, y) {
+  return Math.max(Math.abs(x - 0.5), Math.abs(y - 0.5)) * 2;
+}
+
+// --- Subdivision primitives (shared by both algorithms) ---
+const LOCAL_SCALE = 10000;
+const LOCAL_MIN_DIM = 50;
+const LOCAL_NOISE_RANGE = 1000;
+
+function localFnv1a32(str) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h = (h ^ (str.charCodeAt(i) & 0xff)) >>> 0;
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h;
+}
+function localNext32(s) { return (Math.imul(s, 1664525) + 1013904223) >>> 0; }
+
+// --- Scattered base (helper used by Option 6) ---
+// Like computeRegionsSubdivision, but each submission picks a region FULLY
+// at random (area-weighted) — closeness is ignored. The submission's color,
+// cut direction, claim share, and paint-side are all still driven by its
+// (x, y), but where on the canvas its cut lands is no longer anchored to
+// its own quadrant. Fully breaks the color-in-quadrant lock at the base.
+//
+// Landlock: edge-touching white regions are recolored using the SAME
+// count-weighted + locally-discounted distribution that the salt pass uses,
+// so edges don't quietly re-lock colors to their corners.
+function computeRegionsScatteredBase(points, prompt, useConvictionAxis = true) {
+  // No submissions = blank piece. Skip landlock so the canvas stays white.
+  if (points.length === 0) {
+    return [{ x: 0, y: 0, w: LOCAL_SCALE, h: LOCAL_SCALE, r: 0xff, g: 0xff, b: 0xff }];
+  }
+  const MAX_CAP = 0.70;
+  const LOCAL_Q_DISCOUNT_NUM = 3;
+  const LOCAL_Q_DISCOUNT_DEN = 10; // matching color → 30% weight
+  const colorTable = [CORNERS.TL, CORNERS.TR, CORNERS.BL, CORNERS.BR];
+
+  // Per-quadrant submission counts for landlock color picker
+  const counts = [0, 0, 0, 0];
+  for (const p of points) {
+    const qi = (p.y < 0.5 ? 0 : 2) + (p.x < 0.5 ? 0 : 1);
+    counts[qi]++;
+  }
+  const totalSubs = counts[0] + counts[1] + counts[2] + counts[3];
+  const baseWeights = totalSubs === 0 ? [1, 1, 1, 1] : counts.slice();
+
+  let rng = localFnv1a32(prompt || '');
+  let shuffleRng = localFnv1a32(prompt || '');
+
+  function pickWeightedColor(localQ) {
+    const w = [baseWeights[0], baseWeights[1], baseWeights[2], baseWeights[3]];
+    w[localQ] = Math.floor(w[localQ] * LOCAL_Q_DISCOUNT_NUM / LOCAL_Q_DISCOUNT_DEN);
+    const total = w[0] + w[1] + w[2] + w[3];
+    if (total === 0) {
+      rng = localNext32(rng);
+      return colorTable[rng % 4];
+    }
+    rng = localNext32(rng);
+    const t = rng % total;
+    if (t < w[0]) return colorTable[0];
+    if (t < w[0] + w[1]) return colorTable[1];
+    if (t < w[0] + w[1] + w[2]) return colorTable[2];
+    return colorTable[3];
+  }
+
+  const regions = [{ x: 0, y: 0, w: LOCAL_SCALE, h: LOCAL_SCALE, r: 0xff, g: 0xff, b: 0xff }];
+
+  // Deterministic shuffle (independent rng stream so cut rng isn't disturbed)
+  const ordered = [...points];
+  for (let i = ordered.length - 1; i > 0; i--) {
+    shuffleRng = localNext32(shuffleRng);
+    const j = shuffleRng % (i + 1);
+    const t = ordered[i]; ordered[i] = ordered[j]; ordered[j] = t;
+  }
+
+  // Per-submission: 20% cut a fully random region, 80% cut their closest.
+  // Heavily home-territory biased; cross-quadrant color is rare accent only.
+  const SCATTER_PROB = 20; // (/100)
+
+  for (const p of ordered) {
+    const px = Math.max(0, Math.min(LOCAL_SCALE, Math.round(p.x * LOCAL_SCALE)));
+    const py = Math.max(0, Math.min(LOCAL_SCALE, Math.round(p.y * LOCAL_SCALE)));
+    const gx = 2 * px - LOCAL_SCALE;
+
+    rng = localNext32(rng);
+    const useScatter = (rng % 100) < SCATTER_PROB;
+
+    let bestIdx = -1;
+    if (useScatter) {
+      // Area-weighted random region selection
+      let totalArea = 0;
+      const cuttableIdx = [];
+      const cumArea = [];
+      for (let i = 0; i < regions.length; i++) {
+        const r = regions[i];
+        if (r.w < 2 * LOCAL_MIN_DIM && r.h < 2 * LOCAL_MIN_DIM) continue;
+        totalArea += r.w * r.h;
+        cuttableIdx.push(i);
+        cumArea.push(totalArea);
+      }
+      if (cuttableIdx.length === 0) continue;
+      rng = localNext32(rng);
+      const target = rng % totalArea;
+      let pick = 0;
+      while (pick < cumArea.length - 1 && cumArea[pick] <= target) pick++;
+      bestIdx = cuttableIdx[pick];
+    } else {
+      // Closest-region selection (same as original subdivision)
+      let bestScore = 0;
+      for (let i = 0; i < regions.length; i++) {
+        const r = regions[i];
+        if (r.w < 2 * LOCAL_MIN_DIM && r.h < 2 * LOCAL_MIN_DIM) continue;
+        const cx = r.x + Math.floor(r.w / 2);
+        const cy = r.y + Math.floor(r.h / 2);
+        const dx = cx - px, dy = cy - py;
+        const s = dx * dx + dy * dy;
+        if (bestIdx === -1 || s < bestScore) { bestScore = s; bestIdx = i; }
+      }
+      if (bestIdx === -1) continue;
+    }
+    const reg = regions[bestIdx];
+
+    // Cut direction: when conviction-axis bias is on, each axis's magnitude
+    // drives the probability of cutting along that axis. splitWidth=true is
+    // a vertical cut (divides left/right — matches the x-axis distinction);
+    // splitWidth=false is horizontal (divides top/bottom — matches y-axis).
+    // P(vertical) = |x-0.5| / (|x-0.5| + |y-0.5|), with 50/50 fallback at the
+    // exact center. When the toggle is off, fall back to the legacy rule
+    // (x-axis sign + longer/shorter heuristic).
+    let splitWidth;
+    if (useConvictionAxis) {
+      const xMag = Math.abs(p.x - 0.5);
+      const yMag = Math.abs(p.y - 0.5);
+      const totalMag = xMag + yMag;
+      rng = localNext32(rng);
+      if (totalMag === 0) {
+        splitWidth = (rng & 1) === 0;
+      } else {
+        const pVertScaled = Math.floor(xMag * LOCAL_SCALE / totalMag);
+        splitWidth = (rng % LOCAL_SCALE) < pVertScaled;
+      }
+    } else {
+      const wLonger = reg.w >= reg.h;
+      splitWidth = (gx >= 0) ? wLonger : !wLonger;
+    }
+    if (splitWidth && reg.w < 2 * LOCAL_MIN_DIM) splitWidth = false;
+    else if (!splitWidth && reg.h < 2 * LOCAL_MIN_DIM) splitWidth = true;
+
+    const mag = sliceMagnitude(p.x, p.y);
+    const shaped = Math.sqrt(mag);
+    const claimedShare = Math.floor((0.5 + shaped * (MAX_CAP - 0.5)) * LOCAL_SCALE);
+
+    // PRNG flip for paint-side — submission isn't "in" this random region
+    rng = localNext32(rng);
+    const paintLow = (rng & 1) === 0;
+    const baseRatio = paintLow ? claimedShare : (LOCAL_SCALE - claimedShare);
+
+    rng = localNext32(rng);
+    let ratio = baseRatio + ((rng % (LOCAL_NOISE_RANGE + 1)) - LOCAL_NOISE_RANGE / 2);
+    if (ratio < 1500) ratio = 1500;
+    if (ratio > 8500) ratio = 8500;
+
+    const dim = splitWidth ? reg.w : reg.h;
+    let cutPos = Math.floor(dim * ratio / LOCAL_SCALE);
+    if (cutPos < LOCAL_MIN_DIM) cutPos = LOCAL_MIN_DIM;
+    if (cutPos > dim - LOCAL_MIN_DIM) cutPos = dim - LOCAL_MIN_DIM;
+
+    let r1, r2;
+    if (splitWidth) {
+      r1 = { x: reg.x, y: reg.y, w: cutPos, h: reg.h };
+      r2 = { x: reg.x + cutPos, y: reg.y, w: reg.w - cutPos, h: reg.h };
+    } else {
+      r1 = { x: reg.x, y: reg.y, w: reg.w, h: cutPos };
+      r2 = { x: reg.x, y: reg.y + cutPos, w: reg.w, h: reg.h - cutPos };
+    }
+    const nc = discreteColor(p.x, p.y);
+    if (paintLow) { r1.r = nc[0]; r1.g = nc[1]; r1.b = nc[2]; r2.r = reg.r; r2.g = reg.g; r2.b = reg.b; }
+    else          { r2.r = nc[0]; r2.g = nc[1]; r2.b = nc[2]; r1.r = reg.r; r1.g = reg.g; r1.b = reg.b; }
+    regions.splice(bestIdx, 1, r1, r2);
+  }
+
+  // Landlock: ALL remaining white regions get recolored via the count-weighted
+  // picker. Edge-touching and interior alike — no white shows through.
+  for (const r of regions) {
+    if (!(r.r === 0xff && r.g === 0xff && r.b === 0xff)) continue;
+    const cx = r.x + r.w / 2;
+    const cy = r.y + r.h / 2;
+    const localQ = (cy < LOCAL_SCALE / 2 ? 0 : 2) + (cx < LOCAL_SCALE / 2 ? 0 : 1);
+    const c = pickWeightedColor(localQ);
+    r.r = c[0]; r.g = c[1]; r.b = c[2];
+  }
+
+  return regions;
+}
+
+// --- Option 6: Subdivision + prompt-driven salt cuts ---
+// Runs the dampened-subdivision algorithm, then a post-pass adds salt cuts
+// seeded entirely by the prompt. Each salt op makes TWO perpendicular cuts:
+// the first carves a small sliver off a randomly-chosen region (edge-biased),
+// the second cuts that sliver perpendicular to produce a small BOX at one
+// corner of the parent region. Result is many tiny rects (each at most
+// ~6% of region area) sprinkled across the canvas at prompt-determined
+// positions.
+//
+// Salt color is sampled from a distribution weighted by per-quadrant
+// submission counts: a heavily-attended quadrant's color appears as salt all
+// over the canvas (in any quadrant), while an underrepresented quadrant's
+// color barely appears anywhere — including in its own territory. Empty
+// quadrants contribute zero salt.
+//
+// Salt density: K = min(60, ceil(sqrt(N) * 3)). Sub-linear so high-volume
+// pieces don't drown the underlying subdivision in noise. Capped at 60.
+function computeRegionsSaltCuts(points, prompt, densityMult = 10, maxSliverPct = 30, useConvictionAxis = true, saltMode = 'random') {
+  // Base layer is FULLY scattered: each submission picks a random region
+  // (area-weighted), so their quadrant color can land anywhere on the canvas.
+  // Landlock in the base also uses count-weighted + locally-discounted color
+  // (matching salt's logic) so edges don't re-lock colors to quadrants.
+  const regions = computeRegionsScatteredBase(points, prompt, useConvictionAxis);
+
+  // Separate salt RNG so the base layer's rng stream isn't disturbed.
+  let rng = localFnv1a32((prompt || '') + '\x00salt');
+
+  // Salt density falls off with N: peaks at low-N (when salt is most visually
+  // useful) and shrinks at high-N (when the base layer already carries detail).
+  // K = density × 120 / (20 + floor(sqrt(N))). Uses floor(sqrt) for Solidity
+  // isqrt parity. Only used in 'random' salt mode; 'outlier' mode derives the
+  // salt count from the data itself.
+  const K = points.length === 0
+    ? 0
+    : Math.ceil(densityMult * 120 / (20 + Math.floor(Math.sqrt(points.length))));
+  const colorTable = [CORNERS.TL, CORNERS.TR, CORNERS.BL, CORNERS.BR];
+  const LOCAL_Q_DISCOUNT_NUM = 3;
+  const LOCAL_Q_DISCOUNT_DEN = 10; // matching color gets 30% of its weight
+
+  // Per-quadrant submission counts → base weights for salt color sampling.
+  const counts = [0, 0, 0, 0];
+  for (const p of points) {
+    const qi = (p.y < 0.5 ? 0 : 2) + (p.x < 0.5 ? 0 : 1);
+    counts[qi]++;
+  }
+  const totalSubs = counts[0] + counts[1] + counts[2] + counts[3];
+  const baseWeights = totalSubs === 0
+    ? [1, 1, 1, 1]
+    : [counts[0], counts[1], counts[2], counts[3]];
+
+  // localQ: the canvas-quadrant of the region being salted. Its matching
+  // color is discounted to LOCAL_Q_DISCOUNT_NUM/LOCAL_Q_DISCOUNT_DEN of its
+  // base weight, so salt is biased toward cross-quadrant colors.
+  function pickColor(localQ) {
+    const w = [baseWeights[0], baseWeights[1], baseWeights[2], baseWeights[3]];
+    w[localQ] = Math.floor(w[localQ] * LOCAL_Q_DISCOUNT_NUM / LOCAL_Q_DISCOUNT_DEN);
+    const total = w[0] + w[1] + w[2] + w[3];
+    if (total === 0) {
+      // All weights discounted to zero (e.g., single-quadrant input + that
+      // quadrant is localQ). Fall back to uniform.
+      rng = localNext32(rng);
+      return colorTable[rng % 4];
+    }
+    rng = localNext32(rng);
+    const t = rng % total;
+    if (t < w[0]) return colorTable[0];
+    if (t < w[0] + w[1]) return colorTable[1];
+    if (t < w[0] + w[1] + w[2]) return colorTable[2];
+    return colorTable[3];
+  }
+
+  // maxSliverPct controls the max sliver size (% of region dim). The sliver
+  // can land on the low side [100, maxU] or the high side [10000-maxU, 9900].
+  const SLIVER_MIN = 100;
+  const sliverMaxU = Math.max(SLIVER_MIN + 1, maxSliverPct * 100);
+  const sliverSpan = sliverMaxU - SLIVER_MIN + 1;
+  function pickEdgeBiased() {
+    rng = localNext32(rng);
+    const nearLow = (rng & 1) === 0;
+    rng = localNext32(rng);
+    const ratio = nearLow
+      ? SLIVER_MIN + (rng % sliverSpan)
+      : (LOCAL_SCALE - sliverMaxU) + (rng % sliverSpan);
+    return { ratio, nearLow };
+  }
+
+  // Build the list of salt operations to apply, based on mode.
+  // - 'random': K prompt-seeded ops with no anchor, color from pickColor()
+  // - 'outlier': one op per submission whose quadrant != majority quadrant.
+  //   Each op is anchored to that submission's (x,y) and uses the outlier's
+  //   own quadrant color, so the salt becomes a literal record of dissent
+  //   placed where the dissent happened.
+  const saltOps = [];
+  if (saltMode === 'outlier' && points.length > 0) {
+    let majorityQ = 0;
+    for (let i = 1; i < 4; i++) if (counts[i] > counts[majorityQ]) majorityQ = i;
+    for (const p of points) {
+      const qi = (p.y < 0.5 ? 0 : 2) + (p.x < 0.5 ? 0 : 1);
+      if (qi === majorityQ) continue;
+      saltOps.push({
+        anchorX: Math.max(0, Math.min(LOCAL_SCALE - 1, Math.round(p.x * LOCAL_SCALE))),
+        anchorY: Math.max(0, Math.min(LOCAL_SCALE - 1, Math.round(p.y * LOCAL_SCALE))),
+        color: colorTable[qi],
+      });
+    }
+    // Deterministic shuffle so paint order doesn't favor input order.
+    for (let i = saltOps.length - 1; i > 0; i--) {
+      rng = localNext32(rng);
+      const j = rng % (i + 1);
+      const t = saltOps[i]; saltOps[i] = saltOps[j]; saltOps[j] = t;
+    }
+  } else {
+    for (let k = 0; k < K; k++) saltOps.push({ anchorX: null, anchorY: null, color: null });
+  }
+
+  for (const op of saltOps) {
+    // Pick region: anchored ops use the region containing (anchorX, anchorY);
+    // unanchored ops pick area-weighted at random.
+    let idx = -1;
+    if (op.anchorX !== null) {
+      for (let i = 0; i < regions.length; i++) {
+        const r = regions[i];
+        if (op.anchorX >= r.x && op.anchorX < r.x + r.w &&
+            op.anchorY >= r.y && op.anchorY < r.y + r.h) {
+          if (r.w >= 2 * LOCAL_MIN_DIM || r.h >= 2 * LOCAL_MIN_DIM) idx = i;
+          break;
+        }
+      }
+      if (idx === -1) continue;
+      // Skip if region's color already matches the outlier's — no visible dissent.
+      const reg0 = regions[idx];
+      if (reg0.r === op.color[0] && reg0.g === op.color[1] && reg0.b === op.color[2]) continue;
+    } else {
+      let totalArea = 0;
+      const cuttableIdx = [];
+      const cumArea = [];
+      for (let i = 0; i < regions.length; i++) {
+        const r = regions[i];
+        if (r.w < 2 * LOCAL_MIN_DIM && r.h < 2 * LOCAL_MIN_DIM) continue;
+        totalArea += r.w * r.h;
+        cuttableIdx.push(i);
+        cumArea.push(totalArea);
+      }
+      if (cuttableIdx.length === 0) break;
+      rng = localNext32(rng);
+      const target = rng % totalArea;
+      let pick = 0;
+      while (pick < cumArea.length - 1 && cumArea[pick] <= target) pick++;
+      idx = cuttableIdx[pick];
+    }
+    const reg = regions[idx];
+
+    // First cut: random axis (fall back if forbidden), edge-biased position.
+    // In anchored mode, the sliver lands on the side nearest the anchor coord
+    // so the resulting tiny box sits at the corner closest to the actual dot.
+    rng = localNext32(rng);
+    let splitWidth1 = (rng & 1) === 0;
+    if (splitWidth1 && reg.w < 2 * LOCAL_MIN_DIM) splitWidth1 = false;
+    else if (!splitWidth1 && reg.h < 2 * LOCAL_MIN_DIM) splitWidth1 = true;
+
+    const dim1 = splitWidth1 ? reg.w : reg.h;
+    const eb1 = pickEdgeBiased();
+    let nearLow1 = eb1.nearLow;
+    let ratio1 = eb1.ratio;
+    if (op.anchorX !== null) {
+      // Override side choice with the anchor's position within the region.
+      const anchorFrac = splitWidth1
+        ? (op.anchorX - reg.x) / reg.w
+        : (op.anchorY - reg.y) / reg.h;
+      nearLow1 = anchorFrac < 0.5;
+      // ratio is still edge-biased magnitude; force it to nearLow1's side
+      ratio1 = nearLow1 ? (SLIVER_MIN + (ratio1 - SLIVER_MIN) % sliverSpan)
+                        : (LOCAL_SCALE - sliverMaxU) + ((ratio1 - SLIVER_MIN) % sliverSpan);
+    }
+    let cutPos1 = Math.floor(dim1 * ratio1 / LOCAL_SCALE);
+    if (cutPos1 < LOCAL_MIN_DIM) cutPos1 = LOCAL_MIN_DIM;
+    if (cutPos1 > dim1 - LOCAL_MIN_DIM) cutPos1 = dim1 - LOCAL_MIN_DIM;
+
+    let sliver, remainder;
+    if (splitWidth1) {
+      const left  = { x: reg.x,           y: reg.y, w: cutPos1,         h: reg.h, r: reg.r, g: reg.g, b: reg.b };
+      const right = { x: reg.x + cutPos1, y: reg.y, w: reg.w - cutPos1, h: reg.h, r: reg.r, g: reg.g, b: reg.b };
+      sliver    = nearLow1 ? left  : right;
+      remainder = nearLow1 ? right : left;
+    } else {
+      const top = { x: reg.x, y: reg.y,           w: reg.w, h: cutPos1,         r: reg.r, g: reg.g, b: reg.b };
+      const bot = { x: reg.x, y: reg.y + cutPos1, w: reg.w, h: reg.h - cutPos1, r: reg.r, g: reg.g, b: reg.b };
+      sliver    = nearLow1 ? top : bot;
+      remainder = nearLow1 ? bot : top;
+    }
+
+    // Second cut: perpendicular, edge-biased. Color is the op's color override
+    // if set (outlier mode), else picked from the count-weighted distribution.
+    const regCx = reg.x + reg.w / 2;
+    const regCy = reg.y + reg.h / 2;
+    const localQ = (regCy < LOCAL_SCALE / 2 ? 0 : 2) + (regCx < LOCAL_SCALE / 2 ? 0 : 1);
+    const nc = op.color || pickColor(localQ);
+    const splitWidth2 = !splitWidth1;
+    const dim2 = splitWidth2 ? sliver.w : sliver.h;
+    if (dim2 < 2 * LOCAL_MIN_DIM) {
+      sliver.r = nc[0]; sliver.g = nc[1]; sliver.b = nc[2];
+      regions.splice(idx, 1, sliver, remainder);
+    } else {
+      const eb2 = pickEdgeBiased();
+      let nearLow2 = eb2.nearLow;
+      let ratio2 = eb2.ratio;
+      if (op.anchorX !== null) {
+        const anchorFrac2 = splitWidth2
+          ? (op.anchorX - sliver.x) / sliver.w
+          : (op.anchorY - sliver.y) / sliver.h;
+        nearLow2 = anchorFrac2 < 0.5;
+        ratio2 = nearLow2 ? (SLIVER_MIN + (ratio2 - SLIVER_MIN) % sliverSpan)
+                          : (LOCAL_SCALE - sliverMaxU) + ((ratio2 - SLIVER_MIN) % sliverSpan);
+      }
+      let cutPos2 = Math.floor(dim2 * ratio2 / LOCAL_SCALE);
+      if (cutPos2 < LOCAL_MIN_DIM) cutPos2 = LOCAL_MIN_DIM;
+      if (cutPos2 > dim2 - LOCAL_MIN_DIM) cutPos2 = dim2 - LOCAL_MIN_DIM;
+
+      let tinyBox, sliverRest;
+      if (splitWidth2) {
+        const a = { x: sliver.x,           y: sliver.y, w: cutPos2,            h: sliver.h, r: sliver.r, g: sliver.g, b: sliver.b };
+        const b = { x: sliver.x + cutPos2, y: sliver.y, w: sliver.w - cutPos2, h: sliver.h, r: sliver.r, g: sliver.g, b: sliver.b };
+        tinyBox    = nearLow2 ? a : b;
+        sliverRest = nearLow2 ? b : a;
+      } else {
+        const a = { x: sliver.x, y: sliver.y,           w: sliver.w, h: cutPos2,            r: sliver.r, g: sliver.g, b: sliver.b };
+        const b = { x: sliver.x, y: sliver.y + cutPos2, w: sliver.w, h: sliver.h - cutPos2, r: sliver.r, g: sliver.g, b: sliver.b };
+        tinyBox    = nearLow2 ? a : b;
+        sliverRest = nearLow2 ? b : a;
+      }
+      tinyBox.r = nc[0]; tinyBox.g = nc[1]; tinyBox.b = nc[2];
+      regions.splice(idx, 1, tinyBox, sliverRest, remainder);
+    }
+  }
+
+  return regions;
+}
+
+// Shared painter: emit each region as a rect, FLAT_ALPHA-blended toward white.
+// Pure white regions (untouched paper) render as pure white.
+function paintRegions(ctx, W, H, regions) {
+  const ALPHA = 95, BG = 255;
+  const sx = W / LOCAL_SCALE, sy = H / LOCAL_SCALE;
+  ctx.fillStyle = 'rgb(255,255,255)';
+  ctx.fillRect(0, 0, W, H);
+  for (const reg of regions) {
+    let r, g, b;
+    if (reg.r === 0xff && reg.g === 0xff && reg.b === 0xff) {
+      r = g = b = BG;
+    } else {
+      r = Math.floor((reg.r * ALPHA + BG * (100 - ALPHA)) / 100);
+      g = Math.floor((reg.g * ALPHA + BG * (100 - ALPHA)) / 100);
+      b = Math.floor((reg.b * ALPHA + BG * (100 - ALPHA)) / 100);
+    }
+    ctx.fillStyle = `rgb(${r},${g},${b})`;
+    const x0 = Math.round(reg.x * sx);
+    const y0 = Math.round(reg.y * sy);
+    const x1 = Math.round((reg.x + reg.w) * sx);
+    const y1 = Math.round((reg.y + reg.h) * sy);
+    ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+  }
+}
+
+// --- Distributions ---
+// Each generator takes a target count `n` and produces ~n points laid out
+// according to its profile. The mix proportions stay constant across n.
+
+function clamp01(p) { p.x = Math.max(0, Math.min(1, p.x)); p.y = Math.max(0, Math.min(1, p.y)); return p; }
+
+// Manual mode: clicks on the scatter accumulate here.
+const manualPoints = [];
+function genManual() { return manualPoints; }
+
+function genEven(n) {
+  const pts = [];
+  const per = Math.floor(n / 4);
+  const rem = n - per * 4;
+  for (let q = 0; q < 4; q++) {
+    const ox = (q % 2) * 0.5;
+    const oy = Math.floor(q / 2) * 0.5;
+    const k = per + (q < rem ? 1 : 0);
+    for (let i = 0; i < k; i++) {
+      pts.push({ x: ox + Math.random() * 0.5, y: oy + Math.random() * 0.5 });
+    }
+  }
+  return pts;
+}
+
+function genHeavyCluster(n) {
+  const pts = [];
+  const light = Math.floor(n * 0.1);   // 10% per other quadrant
+  const heavy = n - light * 3;         // remainder in BR (~70%)
+  for (let i = 0; i < heavy; i++) {
+    pts.push({ x: 0.5 + Math.random() * 0.5, y: 0.5 + Math.random() * 0.5 });
+  }
+  for (let q = 0; q < 3; q++) {
+    const ox = (q % 2) * 0.5;
+    const oy = Math.floor(q / 2) * 0.5;
+    for (let i = 0; i < light; i++) {
+      pts.push({ x: ox + Math.random() * 0.5, y: oy + Math.random() * 0.5 });
+    }
+  }
+  return pts;
+}
+
+function genChaotic(n) {
+  const pts = [];
+  for (let i = 0; i < n; i++) pts.push({ x: Math.random(), y: Math.random() });
+  return pts;
+}
+
+function genSparse(n) {
+  // Treat n as a target; sparse = uniform random across the board.
+  return genChaotic(n);
+}
+
+function genTwoCluster(n) {
+  const pts = [];
+  const cluster = Math.round(n * 0.4);   // 40% per cluster
+  const scatter = n - cluster * 2;        // remainder scattered
+  for (let i = 0; i < cluster; i++) {
+    pts.push(clamp01({ x: 0.15 + (Math.random() - 0.5) * 0.15, y: 0.15 + (Math.random() - 0.5) * 0.15 }));
+  }
+  for (let i = 0; i < cluster; i++) {
+    pts.push(clamp01({ x: 0.85 + (Math.random() - 0.5) * 0.15, y: 0.85 + (Math.random() - 0.5) * 0.15 }));
+  }
+  for (let i = 0; i < scatter; i++) pts.push({ x: Math.random(), y: Math.random() });
+  return pts;
+}
+
+function genDiagonal(n) {
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    const t = Math.random();
+    const spread = 0.12;
+    pts.push(clamp01({ x: t + (Math.random() - 0.5) * spread, y: t + (Math.random() - 0.5) * spread }));
+  }
+  return pts;
+}
+
+function genEdgeHeavy(n) {
+  const pts = [];
+  const per = Math.floor(n / 4);
+  const rem = n - per * 4;
+  const counts = [per + (rem > 0 ? 1 : 0), per + (rem > 1 ? 1 : 0), per + (rem > 2 ? 1 : 0), per];
+  for (let i = 0; i < counts[0]; i++) pts.push({ x: Math.random(), y: Math.random() * 0.08 });
+  for (let i = 0; i < counts[1]; i++) pts.push({ x: Math.random(), y: 1 - Math.random() * 0.08 });
+  for (let i = 0; i < counts[2]; i++) pts.push({ x: Math.random() * 0.08, y: Math.random() });
+  for (let i = 0; i < counts[3]; i++) pts.push({ x: 1 - Math.random() * 0.08, y: Math.random() });
+  return pts;
+}
+
+function genCenterHeavy(n) {
+  const pts = [];
+  const heavy = Math.round(n * 0.9);
+  const scatter = n - heavy;
+  for (let i = 0; i < heavy; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const r = Math.random() * 0.15;
+    pts.push(clamp01({ x: 0.5 + Math.cos(angle) * r, y: 0.5 + Math.sin(angle) * r }));
+  }
+  for (let i = 0; i < scatter; i++) pts.push({ x: Math.random(), y: Math.random() });
+  return pts;
+}
+
+function genTopHeavy(n) {
+  const pts = [];
+  const heavy = Math.round(n * 0.9);
+  const light = n - heavy;
+  for (let i = 0; i < heavy; i++) pts.push({ x: Math.random(), y: Math.random() * 0.4 });
+  for (let i = 0; i < light; i++) pts.push({ x: Math.random(), y: 0.5 + Math.random() * 0.5 });
+  return pts;
+}
+
+function genGaussian(n) {
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    const x = (Math.random() + Math.random() + Math.random()) / 3;
+    const y = (Math.random() + Math.random() + Math.random()) / 3;
+    pts.push({ x, y });
+  }
+  return pts;
+}
+
+const distributions = [
+  { name: 'Manual', fn: genManual },
+  { name: 'Even', fn: genEven },
+  { name: 'Heavy Cluster', fn: genHeavyCluster },
+  { name: 'Chaotic', fn: genChaotic },
+  { name: 'Sparse', fn: genSparse },
+  { name: 'Two Clusters', fn: genTwoCluster },
+  { name: 'Diagonal', fn: genDiagonal },
+  { name: 'Edge Heavy', fn: genEdgeHeavy },
+  { name: 'Center Heavy', fn: genCenterHeavy },
+  { name: 'Top Heavy', fn: genTopHeavy },
+  { name: 'Gaussian', fn: genGaussian },
+];
+
+// Cache by (distName, count) so toggling distributions doesn't reshuffle
+// data, but changing count regenerates. Reseed clears the whole cache.
+// Manual mode is never cached (it's edited live via clicks).
+let cachedPoints = {};
+function getPoints(distName, count) {
+  if (distName === 'Manual') return manualPoints;
+  const key = distName + ':' + count;
+  if (!cachedPoints[key]) {
+    const d = distributions.find(d => d.name === distName);
+    cachedPoints[key] = d.fn(count);
+  }
+  return cachedPoints[key];
+}
+
+// --- State ---
+let currentDist = 0;
+
+// --- UI ---
+const distBar = document.getElementById('dist-bar');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const scatterCanvas = document.getElementById('scatter');
+const scatterCtx = scatterCanvas.getContext('2d');
+const info = document.getElementById('info');
+const promptInput = document.getElementById('prompt-input');
+const countRange = document.getElementById('count-range');
+const countInput = document.getElementById('count-input');
+const reseedBtn = document.getElementById('reseed-btn');
+const clearBtn = document.getElementById('clear-btn');
+distributions.forEach((d, i) => {
+  const btn = document.createElement('button');
+  btn.textContent = d.name;
+  btn.addEventListener('click', () => { currentDist = i; render(); });
+  distBar.appendChild(btn);
+});
+
+promptInput.addEventListener('input', render);
+
+function syncCount(source) {
+  const v = Math.max(0, Math.min(2000, parseInt(source.value, 10) || 0));
+  countRange.value = Math.min(parseInt(countRange.max, 10), v);
+  countInput.value = v;
+  render();
+}
+countRange.addEventListener('input', () => syncCount(countRange));
+countInput.addEventListener('input', () => syncCount(countInput));
+
+reseedBtn.addEventListener('click', () => { cachedPoints = {}; render(); });
+clearBtn.addEventListener('click', () => { manualPoints.length = 0; render(); });
+
+// Manual placement: click anywhere on the scatter canvas to drop a point.
+scatterCanvas.addEventListener('click', (e) => {
+  if (distributions[currentDist].name !== 'Manual') return;
+  const rect = scatterCanvas.getBoundingClientRect();
+  const pad = rect.width * 0.06;
+  const usable = rect.width - 2 * pad;
+  const px = Math.max(0, Math.min(1, (e.clientX - rect.left - pad) / usable));
+  const py = Math.max(0, Math.min(1, (e.clientY - rect.top - pad) / usable));
+  manualPoints.push({ x: px, y: py });
+  render();
+});
+
+function drawScatter(pts) {
+  const sz = scatterCanvas.width;
+  const half = sz / 2;
+  const pad = sz * 0.06;
+
+  scatterCtx.fillStyle = '#ffffff';
+  scatterCtx.fillRect(0, 0, sz, sz);
+
+  // Quadrant tints (very faint — orient the eye without overwhelming dots).
+  scatterCtx.fillStyle = 'rgba(85,255,255,0.10)'; scatterCtx.fillRect(0, 0, half, half);
+  scatterCtx.fillStyle = 'rgba(85,255,85,0.10)';  scatterCtx.fillRect(half, 0, half, half);
+  scatterCtx.fillStyle = 'rgba(255,85,85,0.10)';  scatterCtx.fillRect(0, half, half, half);
+  scatterCtx.fillStyle = 'rgba(85,85,255,0.10)';  scatterCtx.fillRect(half, half, half, half);
+
+  // Axes.
+  scatterCtx.strokeStyle = 'rgba(0,0,0,0.18)';
+  scatterCtx.lineWidth = 1;
+  scatterCtx.setLineDash([4, 5]);
+  scatterCtx.beginPath();
+  scatterCtx.moveTo(half, 0); scatterCtx.lineTo(half, sz);
+  scatterCtx.moveTo(0, half); scatterCtx.lineTo(sz, half);
+  scatterCtx.stroke();
+  scatterCtx.setLineDash([]);
+
+  // Dots, colored by the exact same discrete color the slices use.
+  for (const p of pts) {
+    const dx = p.x * (sz - pad * 2) + pad;
+    const dy = p.y * (sz - pad * 2) + pad;
+    const c = discreteColor(p.x, p.y);
+    scatterCtx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},0.95)`;
+    scatterCtx.beginPath();
+    scatterCtx.arc(dx, dy, 4, 0, Math.PI * 2);
+    scatterCtx.fill();
+  }
+
+  // Axis labels.
+  scatterCtx.fillStyle = 'rgba(0,0,0,0.45)';
+  scatterCtx.font = '14px "IBM Plex Mono", monospace';
+  scatterCtx.textAlign = 'center';
+  scatterCtx.textBaseline = 'alphabetic';
+  scatterCtx.fillText('PERFORMED', sz * 0.25, sz - 8);
+  scatterCtx.fillText('HONEST', sz * 0.75, sz - 8);
+  scatterCtx.save();
+  scatterCtx.translate(16, sz / 2);
+  scatterCtx.rotate(-Math.PI / 2);
+  scatterCtx.fillText('UNITING', sz * 0.25, 0);
+  scatterCtx.fillText('DIVIDING', -sz * 0.25, 0);
+  scatterCtx.restore();
+}
+
+function render() {
+  distBar.querySelectorAll('button').forEach((b, i) => b.classList.toggle('active', i === currentDist));
+
+  const isManual = distributions[currentDist].name === 'Manual';
+  scatterCanvas.style.cursor = isManual ? 'crosshair' : 'default';
+
+  const count = parseInt(countInput.value, 10) || 0;
+  const pts = getPoints(distributions[currentDist].name, count);
+  const prompt = promptInput.value;
+  drawScatter(pts);
+
+  // Production defaults — locked, no UI knobs.
+  // densityMult: 10, maxSliverPct: 30, useConvictionAxis: true, saltMode: 'random'.
+  const regions = computeRegionsSaltCuts(pts, prompt, 10, 30, true, 'random');
+  paintRegions(ctx, canvas.width, canvas.height, regions);
+
+  info.textContent = `${distributions[currentDist].name} — ${pts.length} points — seed "${prompt}"`;
+}
+
+render();
+</script>
+</body>
+</html>
