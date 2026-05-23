@@ -4,7 +4,7 @@ A deterministic recursive-subdivision art algorithm that turns an array of (x, y
 
 Originally built for [Mixed Messages](https://mixedmessages.fyi), a participatory art project where each day's collective interpretations of a single word are rendered as a 1/1 onchain NFT.
 
-Mixed Messages is a cultura commentary on the internet's divisiveness. Every [algorithmic decision](./MANIFESTO.md) is in service of making that legible as art, not data visualization.
+Mixed Messages is a cultural commentary on the internet's divisiveness. Every [algorithmic decision](./MANIFESTO.md) is in service of making that legible as art, not data visualization.
 
 ## What it does
 
