@@ -1,5 +1,5 @@
 /**
- * Mixed Messages — Canonical Salt-Cuts Renderer
+ * Mixed Messages — Recursive Subdivision Renderer
  *
  * Reference implementation for the 1/1 art. The Solidity renderer
  * (MixedMessagesRenderer.sol) and the React Canvas renderer
