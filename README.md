@@ -4,8 +4,6 @@ A deterministic recursive-subdivision art algorithm that turns an array of (x, y
 
 Originally built for [Mixed Messages](https://mixedmessages.fyi), a participatory art project where each day's collective interpretations of a single word are rendered as a 1/1 onchain NFT.
 
-![Sample output](demos/sample.png)
-
 ## What it does
 
 You give it:
