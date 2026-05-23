@@ -14,6 +14,15 @@ It returns a fully-colored mosaic of rectangles in one of four pastel colors, on
 
 The output is deterministic: same points + same prompt = identical pixels, every time, in every runtime.
 
+## Color 
+
+| Quadrant | Color |
+|---|---|
+| Honest + Uniting | `#55FF55` |
+| Honest + Dividing | `#5555FF` |
+| Performed + Uniting | `#55FFFF` |
+| Performed + Dividing | `#FF5555` |
+
 ## How it works
 
 Three passes:
